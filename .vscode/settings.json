@@ -1,5 +1,7 @@
 {
     "java.project.referencedLibraries": [
-        "libs/jnativehook-2.2.2.jar"
+        "libs/jnativehook-2.2.2.jar",
+        "libs/jna-5.13.0.jar",
+        "libs/jna-platform-5.13.0.jar"
     ]
 }
