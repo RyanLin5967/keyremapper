@@ -1,244 +1,318 @@
 package com.ryanlin.remapper;
 
-import com.sun.jna.Library; 
-import com.sun.jna.Native;  
+import com.sun.jna.Library;
+import com.sun.jna.Native;
 import com.sun.jna.platform.win32.Kernel32;
 import com.sun.jna.platform.win32.User32;
 import com.sun.jna.platform.win32.WinDef.*;
 import com.sun.jna.platform.win32.WinUser;
 import com.sun.jna.platform.win32.WinUser.HHOOK;
+import com.sun.jna.platform.win32.WinUser.KBDLLHOOKSTRUCT;
+import com.sun.jna.platform.win32.WinUser.LowLevelKeyboardProc;
 import com.sun.jna.platform.win32.WinUser.MSG;
+
 import javax.swing.*;
-
 import java.awt.*;
-import java.awt.event.*;
-
+import java.awt.event.KeyEvent;
+import java.io.*;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
-import java.io.*;   
+import java.util.concurrent.*;
 
-import com.github.kwhat.jnativehook.GlobalScreen;
-import com.github.kwhat.jnativehook.NativeHookException;
-import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent;
-import com.github.kwhat.jnativehook.keyboard.NativeKeyListener; 
-
-public class Main implements NativeKeyListener {
-    static final int IS_INJECTED = 16; 
-    static Robot robot;  
-    static HashMap<Integer, Integer> codeToCode = new HashMap<>(); 
+public class Main {
+    // --- JNA CONFIGURATION ---
+    private static HHOOK hhk;
+    private static LowLevelKeyboardProc keyboardHook;
+    
+    // --- STATE ---
+    static Robot robot;
+    static HashMap<Integer, Integer> codeToCode = new HashMap<>();
+    
+    // Tracks keys currently pressed physically (for Custom Key matching)
     private static Set<Integer> heldKeys = new HashSet<>();
     
-    private static CustomKey activeCustomKey = null; 
-    private static int activeTargetCode = -1;      
-
-    public static volatile boolean isRecording = false; 
-    public static LinkedHashSet<Integer> recordingBuffer = new LinkedHashSet<>(); 
+    // --- AUTO-REPEATER SYSTEM (The Fix) ---
+    private static ConcurrentHashMap<Integer, ScheduledFuture<?>> activeRepeaters = new ConcurrentHashMap<>();
+    private static ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
     
-    public interface Win32User32 extends Library { 
+    // Custom Key State (Combos)
+    private static CustomKey activeCustomKey = null;
+    private static int activeTargetCode = -1;
+
+    // Recording State
+    public static volatile boolean isRecording = false;
+    public static LinkedHashSet<Integer> recordingBuffer = new LinkedHashSet<>();
+    
+    // Physical modifiers map for cleaning
+    private static final Map<Integer, Integer> windowsToJavaModifiers = new HashMap<>();
+    static {
+        windowsToJavaModifiers.put(0xA0, KeyEvent.VK_SHIFT);   // VK_LSHIFT
+        windowsToJavaModifiers.put(0xA1, KeyEvent.VK_SHIFT);   // VK_RSHIFT
+        windowsToJavaModifiers.put(0xA2, KeyEvent.VK_CONTROL); // VK_LCONTROL
+        windowsToJavaModifiers.put(0xA3, KeyEvent.VK_CONTROL); // VK_RCONTROL
+        windowsToJavaModifiers.put(0xA4, KeyEvent.VK_ALT);     // VK_LMENU
+        windowsToJavaModifiers.put(0xA5, KeyEvent.VK_ALT);     // VK_RMENU
+        windowsToJavaModifiers.put(0x5B, KeyEvent.VK_WINDOWS); // VK_LWIN
+        windowsToJavaModifiers.put(0x5C, KeyEvent.VK_WINDOWS); // VK_RWIN
+    }
+
+    public interface Win32User32 extends Library {
         Win32User32 INSTANCE = Native.load("user32", Win32User32.class);
         void keybd_event(byte bVk, byte bScan, int dwFlags, int dwExtraInfo);
+        short GetAsyncKeyState(int vKey);
     }
 
-    public static void deleteCustomKey(CustomKey key) {
-    if (key == null) return;
-
-    // 1. Remove the mapping from the active HashMap
-    // This stops the key from working immediately
-    if (codeToCode.containsKey(key.getPseudoCode())) {
-        codeToCode.remove(key.getPseudoCode());
+    public static void main(String[] args) {
+        try { robot = new Robot(); } catch (AWTException e) {}
+        CustomKeyManager.load();
+        SwingUtilities.invokeLater(() -> new RemapperGUI());
+        new Thread(Main::installHook).start();
     }
 
-    // 2. Remove the key definition from the Manager
-    CustomKeyManager.remove(key); 
-    
-    // 3. Save both files so the deletion persists after restart
-    updateTextFile();       // Saves mappings.txt (without the ghost mapping)
-    CustomKeyManager.save(); // Saves the custom keys file
-}
-
-    private void cleanCopilotModifiers() {
-        if (robot == null) {
-            try { robot = new Robot(); } catch (AWTException e) {}
-        }
-        if (robot != null) {
-            robot.keyRelease(KeyEvent.VK_WINDOWS);
-            robot.keyRelease(KeyEvent.VK_SHIFT);
-        }
-    }
-
-    private void doSafePress(int code, boolean pressed) throws AWTException { //to prevent crashing cuz of code 134
-        if (code == 13) code = 10;
+    private static void installHook() {
+        HMODULE hMod = Kernel32.INSTANCE.GetModuleHandle(null);
         
-        if (code == 134 || code == KeyEvent.VK_F23) {
-            byte vk = (byte) 134; 
-            byte scan = (byte) 0x6E; 
-            int flags = pressed ? 0 : 2; 
-            Win32User32.INSTANCE.keybd_event(vk, scan, flags, 0);
-            return;
-        }
-
-        if (robot == null) robot = new Robot();
-        if (pressed) robot.keyPress(code);
-        else robot.keyRelease(code);
-    }
-
-    public void simulateCombo(CustomKey ck, boolean pressed) throws AWTException {
-        if (ck != null) {
-            if (pressed) {
-                for (int c : ck.getRawCodes()) doSafePress(c, true);
-            } else {
-                for (int c : ck.getRawCodes()) doSafePress(c, false);
-            }
-        }
-    }
-
-    public void simulateKeyPress(int code, boolean pressed) throws AWTException {
-        if (code <= 0) return;
-        if (code == 13) code = 10;
-        
-        if (code >= 10000) {
-            CustomKey ck = CustomKeyManager.getByPseudoCode(code);
-            simulateCombo(ck, pressed);
-            return; 
-        }
-        doSafePress(code, pressed);
-    }     
-
-    public void nativeKeyPressed(NativeKeyEvent e) {
-        WinUser.LowLevelKeyboardProc keyboardHook = new WinUser.LowLevelKeyboardProc() {
-            public LRESULT callback(int nCode, WPARAM wParam, WinUser.KBDLLHOOKSTRUCT info) {
-                if (nCode >= 0) {            
+        keyboardHook = new LowLevelKeyboardProc() {
+            @Override
+            public LRESULT callback(int nCode, WPARAM wParam, KBDLLHOOKSTRUCT info) {
+                if (nCode >= 0) {
                     boolean isInjected = (info.flags & 16) != 0; 
                     if (isInjected) {
-                        return User32.INSTANCE.CallNextHookEx(null, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));   
-                    }                   
-                    
+                        return User32.INSTANCE.CallNextHookEx(hhk, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));
+                    }
+
                     int code = info.vkCode;
                     boolean isPress = (wParam.intValue() == WinUser.WM_KEYDOWN || wParam.intValue() == WinUser.WM_SYSKEYDOWN);
                     boolean isRelease = (wParam.intValue() == WinUser.WM_KEYUP || wParam.intValue() == WinUser.WM_SYSKEYUP);
 
-                    if (code == 3675 || code == 3676 || code == 91 || code == 92) code = KeyEvent.VK_WINDOWS;
-                    if(code == 160 || code == 161) code = KeyEvent.VK_SHIFT;
-                    if(code == 162 || code == 163) code = KeyEvent.VK_CONTROL;
-                    if(code == 164 || code == 165) code = KeyEvent.VK_ALT;
-                    if(code == 10) code = 13;
+                    // --- NORMALIZE KEYS ---
+                    if (code == 91 || code == 92) code = KeyEvent.VK_WINDOWS;
+                    if (code == 160 || code == 161) code = KeyEvent.VK_SHIFT;
+                    if (code == 162 || code == 163) code = KeyEvent.VK_CONTROL;
+                    if (code == 164 || code == 165) code = KeyEvent.VK_ALT;
+                    if (code == 10) code = 13;
 
+                    // --- RECORDING MODE ---
                     if (isRecording) {
-                        if (isPress) recordingBuffer.add(code);
-                        return new LRESULT(1); 
+                        if (isPress) {
+                            if (code == 134 || code == KeyEvent.VK_F23) {
+                                recordingBuffer.remove(KeyEvent.VK_SHIFT);
+                                recordingBuffer.remove(KeyEvent.VK_WINDOWS);
+                            }
+                            recordingBuffer.add(code);
+                        }
+                        return new LRESULT(1);
                     }
-                    if (isPress) heldKeys.add(code);  
-                    else if (isRelease) heldKeys.remove(code);
 
+                    // --- INPUT TRACKING ---
+                    if (isPress) {
+                        if (code == 134 || code == KeyEvent.VK_F23) {
+                            heldKeys.remove(KeyEvent.VK_SHIFT);
+                            heldKeys.remove(KeyEvent.VK_WINDOWS);
+                        }
+                        heldKeys.add(code);
+                    } else if (isRelease) {
+                        heldKeys.remove(code);
+                    }
+
+                    // ============================================
+                    //          CUSTOM KEY LOGIC (Combos)
+                    // ============================================
                     if (isRelease && activeCustomKey != null) {
                         if (activeCustomKey.getRawCodes().contains(code)) {
-                            try {
-                                simulateKeyPress(activeTargetCode, false); 
-                            } catch (Exception ex) {}
-                            
+                            stopRepeater(code); // STOP SPAMMING
                             activeCustomKey = null;
                             activeTargetCode = -1;
-                            return new LRESULT(1);
+                            return new LRESULT(1); 
                         }
                     }
-                    if (isPress && activeCustomKey == null) {
+
+                    if (isPress && activeCustomKey == null && !activeRepeaters.containsKey(code)) {
                         CustomKey matched = CustomKeyManager.match(heldKeys);
                         if (matched != null) {
                             int pseudoID = matched.getPseudoCode();
                             if (codeToCode.containsKey(pseudoID)) {
-                                activeCustomKey = matched; 
+                                activeCustomKey = matched;
                                 activeTargetCode = codeToCode.get(pseudoID);
-                                
-                                if (matched.getRawCodes().contains(134)) {
-                                    cleanCopilotModifiers();
-                                }
-                                
-                                try {
-                                    simulateKeyPress(activeTargetCode, true); 
-                                } catch (Exception ex) {}
-                                
+                                startRepeater(code, activeTargetCode); 
                                 return new LRESULT(1); 
                             }
-                        }             
-                    }
-
-                    if (isPress && activeCustomKey != null) {
-                        if (activeCustomKey.getRawCodes().contains(code)) {
-                            return new LRESULT(1);
                         }
                     }
 
-                    if (codeToCode.containsKey(code)){    
-                        //if (code == 134) cleanCopilotModifiers();
+                    if (activeCustomKey != null) {
+                        if (activeCustomKey.getRawCodes().contains(code)) {
+                            return new LRESULT(1); 
+                        }
+                    }
+
+                    // ============================================
+                    //        STANDARD KEY REMAPPING
+                    // ============================================
+                    if (activeCustomKey == null && codeToCode.containsKey(code)) {
+                        int target = codeToCode.get(code);
 
                         if (isPress) {
-                            try { simulateKeyPress(codeToCode.get(code), true); } catch (AWTException ex) {}
-                        } else if (isRelease) {
-                            try { simulateKeyPress(codeToCode.get(code), false); } catch (AWTException ex) {}   
+                            if (!activeRepeaters.containsKey(code)) {
+                                startRepeater(code, target);
+                            }
+                        } 
+                        else if (isRelease) {
+                            stopRepeater(code);
                         }
                         return new LRESULT(1);
                     }
-                }   
-                return User32.INSTANCE.CallNextHookEx(null, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));
+                }
+                return User32.INSTANCE.CallNextHookEx(hhk, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));
             }
         };
-                                                    
-        HMODULE hMod = Kernel32.INSTANCE.GetModuleHandle(null);
-        HHOOK hhk = User32.INSTANCE.SetWindowsHookEx(WinUser.WH_KEYBOARD_LL, keyboardHook, hMod, 0);
 
-        if (hhk == null) return;
+        hhk = User32.INSTANCE.SetWindowsHookEx(WinUser.WH_KEYBOARD_LL, keyboardHook, hMod, 0);
 
-        WinUser.MSG msg = new WinUser.MSG();
+        MSG msg = new MSG();
         while (User32.INSTANCE.GetMessage(msg, null, 0, 0) != 0) {
             User32.INSTANCE.TranslateMessage(msg);
             User32.INSTANCE.DispatchMessage(msg);
         }
         User32.INSTANCE.UnhookWindowsHookEx(hhk);
     }
-    
-    public void nativeKeyReleased(NativeKeyEvent e) {}
-    public void nativeKeyTyped(NativeKeyEvent e) {}
 
-    public static void main(String[] args){ 
-        CustomKeyManager.load();
-        SwingUtilities.invokeLater(() -> new RemapperGUI());
-        try{
-            GlobalScreen.registerNativeHook();
-        } catch(NativeHookException ex){
-            System.err.println("error registering native hook");
-            ex.printStackTrace();
-        }          
-        GlobalScreen.addNativeKeyListener(new Main());
+    // --- REPEATER LOGIC (FIXED TIMING) ---
+
+    private static void startRepeater(int sourceKey, int targetKey) {
+        if (activeRepeaters.containsKey(sourceKey)) return;
+
+        // 1. IMMEDIATE ACTION: Fire the key once immediately (The "Typing" feel)
+        cleanPhysicalModifiers();
+        try { simulateKeyPress(targetKey, true); } catch (Exception e) {}
+
+        // 2. DELAYED ACTION: Start the spamming after 500ms
+        Runnable spamTask = () -> {
+            try {
+                // Constantly ensure modifiers are gone (essential for Copilot)
+                cleanPhysicalModifiers();
+                simulateKeyPress(targetKey, true);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        };
+
+        // Schedule: Wait 500ms (Initial Delay), then Repeat every 30ms (Speed)
+        ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(spamTask, 500, 30, TimeUnit.MILLISECONDS);
+        activeRepeaters.put(sourceKey, future);
     }
 
+    private static void stopRepeater(int sourceKey) {
+        ScheduledFuture<?> future = activeRepeaters.remove(sourceKey);
+        if (future != null) {
+            future.cancel(true); // Stop the spam thread
+            
+            // Release the key
+            if (codeToCode.containsKey(sourceKey)) {
+                try { simulateKeyPress(codeToCode.get(sourceKey), false); } catch (Exception e) {}
+            } else if (activeCustomKey != null) {
+                 try { simulateKeyPress(activeTargetCode, false); } catch (Exception e) {}
+            }
+        }
+    }
+
+
+    // --- UTILITIES ---
+
+    private static void cleanPhysicalModifiers() {
+        if (robot == null) return;
+        
+        for (Map.Entry<Integer, Integer> entry : windowsToJavaModifiers.entrySet()) {
+            int winCode = entry.getKey();
+            int javaCode = entry.getValue();
+            
+            if ((Win32User32.INSTANCE.GetAsyncKeyState(winCode) & 0x8000) != 0) {
+                robot.keyRelease(javaCode);
+            }
+        }
+    }
+
+    private static void doSafePress(int code, boolean pressed) {
+        if (code == 13) code = 10;
+        
+        // F23 / Copilot Hardware Injection
+        if (code == 134 || code == KeyEvent.VK_F23) {
+            if (pressed) {
+                if (robot != null) {
+                    robot.keyPress(KeyEvent.VK_SHIFT);
+                    robot.keyPress(KeyEvent.VK_WINDOWS);
+                }
+                Win32User32.INSTANCE.keybd_event((byte) 134, (byte) 0x6E, 0, 0);
+            } else {
+                Win32User32.INSTANCE.keybd_event((byte) 134, (byte) 0x6E, 2, 0);
+                if (robot != null) {
+                    robot.keyRelease(KeyEvent.VK_WINDOWS);
+                    robot.keyRelease(KeyEvent.VK_SHIFT);
+                }
+            }
+            return;
+        }
+
+        if (robot != null) {
+            if (pressed) robot.keyPress(code);
+            else robot.keyRelease(code);
+        }
+    }
+
+    public static void simulateKeyPress(int code, boolean pressed) throws AWTException {
+        if (code <= 0) return;
+        if (code >= 10000) {
+            CustomKey ck = CustomKeyManager.getByPseudoCode(code);
+            simulateCombo(ck, pressed);
+            return;
+        }
+        doSafePress(code, pressed);
+    }
+    
+    public static void simulateCombo(CustomKey ck, boolean pressed) {
+        if (ck != null) {
+            for (int c : ck.getRawCodes()) {
+                doSafePress(c, pressed);
+            }
+        }
+    }
+
+    // --- FILE I/O ---
+    
     public static void updateTextFile(){
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt"))) {
             for (Map.Entry<Integer, Integer> entry: codeToCode.entrySet()) { 
-                String line = entry.getKey() + "," + entry.getValue();
-                writer.write(line);
+                writer.write(entry.getKey() + "," + entry.getValue());
                 writer.newLine(); 
             }
-        } catch (IOException ex) {
-            ex.printStackTrace();
-        }       
+        } catch (IOException ex) { ex.printStackTrace(); }       
     }
 
     public static void saveSingleMapping(int init, int result) { 
+        codeToCode.put(init, result);
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt", true))) {
-                writer.write(init + "," + result);
-                writer.newLine(); 
-        } catch (IOException ex) {
-            ex.printStackTrace(); 
-        }
+            writer.write(init + "," + result);
+            writer.newLine(); 
+        } catch (IOException ex) { ex.printStackTrace(); }
     }    
+    
     public static void clearFile() { 
+        codeToCode.clear();
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt"))) { 
             writer.write(""); 
-        } catch (IOException ex) { 
-                ex.printStackTrace(); 
-        } 
+        } catch (IOException ex) { ex.printStackTrace(); } 
     }
-}
+    
+    public static void deleteCustomKey(CustomKey key) {
+        if (key == null) return;  
+        if (codeToCode.containsKey(key.getPseudoCode())) {
+            codeToCode.remove(key.getPseudoCode());
+        }
+        CustomKeyManager.remove(key); 
+        updateTextFile();       
+        CustomKeyManager.save(); 
+    }
+}                                                                                                  

@@ -17,6 +17,7 @@ public class VirtualKeyboard extends JPanel {
     private final int FUNCTION_GAP_SIZE = 29; 
 
     private JPanel customKeysPanel;
+    private RemapperGUI parentGUI; // Add this field
 
     public static String getName(int code) {
         if (code >= 10000) {
@@ -26,8 +27,9 @@ public class VirtualKeyboard extends JPanel {
         return codeToNameMap.getOrDefault(code, "Key " + code);
     }
 
-    public VirtualKeyboard(ActionListener listener) {
-        this.keyListener = listener;
+    public VirtualKeyboard(RemapperGUI gui) {
+        this.keyListener = gui;
+        this.parentGUI = gui;
         customKeysPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 5));
         customKeysPanel.setBorder(BorderFactory.createTitledBorder("Custom Keys"));
         customKeysPanel.setPreferredSize(new Dimension(800, 150)); 
@@ -54,8 +56,12 @@ public class VirtualKeyboard extends JPanel {
                             int confirm = JOptionPane.showConfirmDialog(VirtualKeyboard.this, 
                                 "Delete custom key '" + ck.getName() + "'?", "Confirm", JOptionPane.YES_NO_OPTION);
                             if (confirm == JOptionPane.YES_OPTION) {
+                                parentGUI.removeMappingByPseudoCode(ck.getPseudoCode());
+                                // 2. Delete the actual key definition
                                 Main.deleteCustomKey(ck);
                                 CustomKeyManager.remove(ck);
+                                
+                                // 3. Refresh visuals
                                 rebuildCustomKeys();
                                 revalidate(); 
                                 repaint();

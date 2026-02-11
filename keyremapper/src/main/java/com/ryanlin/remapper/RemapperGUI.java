@@ -46,9 +46,9 @@ public class RemapperGUI extends JFrame implements ActionListener {
 
     private void initUI() {
         setTitle("Keyremapper");
-        //setExtendedState(JFrame.MAXIMIZED_BOTH);
-        setUndecorated(false);
-        setLayout(new BorderLayout());
+        //setExtendedState(JFrame.MAXIMIZED_BOTH); 
+        setUndecorated(false);    
+        setLayout(new BorderLayout());          
 
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         topPanel.setBackground(new Color(240, 240, 240));
@@ -153,9 +153,33 @@ public class RemapperGUI extends JFrame implements ActionListener {
         recorder.setVisible(true);
 
         if (recorder.result != null && !recorder.result.isEmpty()) {
+            
+            // --- CHECK 1: DUPLICATE COMBINATION ---
+            if (CustomKeyManager.isCombinationTaken(recorder.result)) {
+                JOptionPane.showMessageDialog(this, 
+                    "This key combination is already used by another Custom Key!", 
+                    "Duplicate Combination", 
+                    JOptionPane.ERROR_MESSAGE);
+                return; 
+            }
+
             String name = JOptionPane.showInputDialog(this, "Name this custom key (e.g. 'Copilot'):");
+            
             if (name != null && !name.trim().isEmpty()) {
+                name = name.trim();
+
+                // --- CHECK 2: DUPLICATE NAME ---
+                if (CustomKeyManager.isNameTaken(name)) {
+                    JOptionPane.showMessageDialog(this, 
+                        "A Custom Key with this name already exists!", 
+                        "Duplicate Name", 
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                // --- CORRECTED CALL: Use existing add(String, List) ---
                 CustomKeyManager.add(name, recorder.result);
+                
                 virtualKeyboard.rebuildCustomKeys();
             }
         }
@@ -244,5 +268,23 @@ public class RemapperGUI extends JFrame implements ActionListener {
             return (ck != null) ? ck.getName() : "Unknown";
         }
         return VirtualKeyboard.getName(code);
+    }
+    
+    public void removeMappingByPseudoCode(int customKeyCode) {
+        String keyName = VirtualKeyboard.getName(customKeyCode);
+        for (int i = model.getRowCount() - 1; i >= 0; i--) {
+            String rowKey = (String) model.getValueAt(i, 0);
+            String rowMap = (String) model.getValueAt(i, 1);
+            
+            if (rowKey.equals(keyName) || rowMap.equals(keyName)) {
+                model.removeRow(i);
+            }
+        }
+        
+        Main.codeToCode.entrySet().removeIf(entry -> 
+            entry.getKey() == customKeyCode || entry.getValue() == customKeyCode
+        );
+        
+        Main.updateTextFile();
     }
 }

@@ -33,6 +33,7 @@ public class CustomKeyManager {
     }
 
     public static CustomKey add(String name, List<Integer> codes) {
+        // This is your original constructor logic
         CustomKey ck = new CustomKey(name, nextPseudoCode++, codes);
         customKeys.add(ck);
         save();
@@ -55,5 +56,24 @@ public class CustomKeyManager {
             if (pressedKeys.containsAll(ck.getRawCodes())) return ck;
         }
         return null;
+    }
+
+    // --- NEW VALIDATION METHODS FOR GUI ---
+
+    public static boolean isNameTaken(String name) {
+        if (name == null) return false;
+        for (CustomKey ck : customKeys) {
+            if (ck.getName().equalsIgnoreCase(name.trim())) return true;
+        }
+        return false;
+    }
+
+    public static boolean isCombinationTaken(List<Integer> newCodes) {
+        Set<Integer> newSet = new HashSet<>(newCodes);
+        for (CustomKey ck : customKeys) {
+            // Check strict equality of the set (ignores order)
+            if (new HashSet<>(ck.getRawCodes()).equals(newSet)) return true;
+        }
+        return false;
     }
 }

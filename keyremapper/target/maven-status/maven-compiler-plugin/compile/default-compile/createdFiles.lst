@@ -3,6 +3,7 @@ com\ryanlin\remapper\Main.class
 com\ryanlin\remapper\VirtualKeyboard.class
 com\ryanlin\remapper\KeyRecorder.class
 com\ryanlin\remapper\Main$1.class
+com\ryanlin\remapper\KeyRecorder$2.class
 com\ryanlin\remapper\KeyMap.class
 com\ryanlin\remapper\RemapperGUI$1.class
 com\ryanlin\remapper\CustomKey.class
