@@ -1,3 +1,5 @@
+import com.sun.jna.Library; 
+import com.sun.jna.Native;  
 import com.sun.jna.platform.win32.Kernel32;
 import com.sun.jna.platform.win32.User32;
 import com.sun.jna.platform.win32.WinDef.*;
@@ -10,343 +12,207 @@ import java.awt.*;
 import java.awt.event.*;
 
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
-
-import java.io.*; //should this be only the imports you need?
-
-
-
+import java.util.Set;
+import java.io.*; 
 
 import com.github.kwhat.jnativehook.GlobalScreen;
 import com.github.kwhat.jnativehook.NativeHookException;
 import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent;
 import com.github.kwhat.jnativehook.keyboard.NativeKeyListener;
 
-//MAKE UI LOOK VERY GOOD OR ELSE YOU FAIL
-//add ability for combination later (copilot key)
 public class Main implements NativeKeyListener {
     static final int IS_INJECTED = 16;
     static Robot robot;  
     static HashMap<Integer, Integer> codeToCode = new HashMap<>(); 
+    private static Set<Integer> heldKeys = new HashSet<>();
     
-    public void simulateKeyPress(int code, boolean pressed) throws AWTException{
-        if (code <= 0) {
-            return;
+    // --- STATE TRACKING FOR HOLDING ---
+    private static CustomKey activeCustomKey = null; // Which combo is currently held down?
+    private static int activeTargetCode = -1;        // What key are we simulating?
+    // ----------------------------------
+
+    public static volatile boolean isRecording = false; 
+    public static LinkedHashSet<Integer> recordingBuffer = new LinkedHashSet<>(); 
+    
+    public interface Win32User32 extends Library {
+        Win32User32 INSTANCE = Native.load("user32", Win32User32.class);
+        void keybd_event(byte bVk, byte bScan, int dwFlags, int dwExtraInfo);
+    }
+
+    // Release "Ghost" modifiers from Copilot (Win+Shift)
+    private void cleanCopilotModifiers() {
+        if (robot == null) {
+            try { robot = new Robot(); } catch (AWTException e) {}
         }
-        if(code == 13){
-                code = 10;
-            }
-        if (pressed){   
-            robot = new Robot();
-            robot.keyPress(code);
-        }else{       
-            robot.keyRelease(code);
+        if (robot != null) {
+            robot.keyRelease(KeyEvent.VK_WINDOWS);
+            robot.keyRelease(KeyEvent.VK_SHIFT);
         }
-    }      
-    public void nativeKeyPressed(NativeKeyEvent e) {  
+    }
+
+    private void doSafePress(int code, boolean pressed) throws AWTException {
+        if (code == 13) code = 10;
         
-    // have to not block injected keys but block the physical keypress 
-        WinUser.LowLevelKeyboardProc keyboardHook = new WinUser.LowLevelKeyboardProc() {
-            
-            public LRESULT callback(int nCode, WPARAM wParam, WinUser.KBDLLHOOKSTRUCT info) {
-                // If nCode is >= 0, we can process the event
-                // need to check if the key is simulated by robot class or not 
-                if (nCode >= 0) {            
-                    boolean isInjected = (info.flags & IS_INJECTED) != 0;                                                                                                     
-                    if (isInjected) {
-                        return User32.INSTANCE.CallNextHookEx(null, nCode, wParam,
-                                new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));   
-                    }                           
-                    int code = info.vkCode;
-                    //for the visual keyboard thing, make left and right distinct not just check for both
-                    if (code == 3675 || code == 3676 || code == 91 || code == 92) { 
-                        code = KeyEvent.VK_WINDOWS; 
-                    }
-                    if(code == 160 || code == 161){
-                        code = KeyEvent.VK_SHIFT;
-                    } 
-                    if(code == 162 || code == 163){
-                        code = KeyEvent.VK_CONTROL;
-                    }
-                    if(code == 164 || code == 165){
-                        code = KeyEvent.VK_ALT;
-                    }
-                    if(code == 10){
-                        code = 13;
-                    }     
-                    if (codeToCode.containsKey(code)){    
-                        int event = wParam.intValue(); 
-                        
-                        if (event == WinUser.WM_KEYDOWN || event == WinUser.WM_SYSKEYDOWN) {
-                            try {
-                                simulateKeyPress(codeToCode.get(code), true);
-                            } catch (AWTException e) {
-                                e.printStackTrace();
-                            }
-                        }  else if (event == WinUser.WM_KEYUP || event == WinUser.WM_SYSKEYUP) {
-                            try{
-                                simulateKeyPress(codeToCode.get(code), false);
-                            }catch(AWTException e){
-                                e.printStackTrace();
-                            }   
-                        }
-                        //return here
-                        return new LRESULT(1);
-                    }
-                }   
-                                                                                                                                              
-                return User32.INSTANCE.CallNextHookEx(null, nCode, wParam,
-                        new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));
-            }
-        };
-                                                   
-        HMODULE hMod = Kernel32.INSTANCE.GetModuleHandle(null);
-        HHOOK hhk = User32.INSTANCE.SetWindowsHookEx(
-                WinUser.WH_KEYBOARD_LL,
-                keyboardHook,
-                hMod,
-                0 // 0 means it hooks all threads (global)
-        );
-
-        if (hhk == null) {
-            System.err.println("Failed to install hook.");
+        // Handle Copilot/F23 (134) via Windows API
+        if (code == 134 || code == KeyEvent.VK_F23) {
+            byte vk = (byte) 134; 
+            byte scan = (byte) 0x6E; 
+            int flags = pressed ? 0 : 2; 
+            Win32User32.INSTANCE.keybd_event(vk, scan, flags, 0);
             return;
         }
 
-        MSG msg = new MSG();
-        int result;
-        while ((result = User32.INSTANCE.GetMessage(msg, null, 0, 0)) != 0) {
-            if (result == -1) {
-                break;
-            }
-            User32.INSTANCE.TranslateMessage(msg);
-            User32.INSTANCE.DispatchMessage(msg);
-        }
+        if (robot == null) robot = new Robot();
+        if (pressed) robot.keyPress(code);
+        else robot.keyRelease(code);
+    }
 
-        User32.INSTANCE.UnhookWindowsHookEx(hhk);
-
-        // use esc key to stop program
-        if (e.getKeyCode() == NativeKeyEvent.VC_ESCAPE) {
-            try {
-                GlobalScreen.unregisterNativeHook();
-            } catch (NativeHookException ex) {
-                ex.printStackTrace();
+    // Helper to simulate a list of keys (for mapping TO a combo)
+    public void simulateCombo(CustomKey ck, boolean pressed) throws AWTException {
+        if (ck != null) {
+            if (pressed) {
+                for (int c : ck.getRawCodes()) doSafePress(c, true);
+            } else {
+                for (int c : ck.getRawCodes()) doSafePress(c, false);
             }
         }
     }
-    
-    public void nativeKeyReleased(NativeKeyEvent e) {
-		System.out.println("Key Released: " + NativeKeyEvent.getKeyText(e.getKeyCode()));
-	}
 
-	public void nativeKeyTyped(NativeKeyEvent e) {
+    // Primary simulation method
+    public void simulateKeyPress(int code, boolean pressed) throws AWTException {
+        if (code <= 0) return;
+        if (code == 13) code = 10;
         
-        //System.out.println("Key Typed: " + e.getRawCode()); for testing 
-        //remove this shit later
-    //     if (e.getRawCode() >= 65 && e.getRawCode() <= 90){
-    //         System.out.println("Key Typed: " + Character.toUpperCase((char)e.getRawCode()));
-    //     // have to manually map space + backspace since it will return "Undefined" otherwise
-    //     }else if(e.getRawCode() == 32) {
-    //         System.out.println("Key Typed: "+ "Space");
-    //     }else if(e.getRawCode() == 8){
-    //         System.out.println("Key Typed: "+ "Backspace");
-    //     }
-	}
-    public static void main(String[] args){
-        //also need to allow users to put their unique keycodes
-        //or allow users to see their keycodes
-        //don't forget to clear keymap object after 
-
-        //load everything into the hashmap:
-        /* 
-        DefaultTableModel model = new DefaultTableModel(new String[]{"Key", "Mapped To"}, 0) {
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return false;
-            }
-        };        
-        JTable table = new JTable(model);
-        table.setFocusable(false);
-        table.setRowSelectionAllowed(true);
-        JScrollPane scroll = new JScrollPane(table);
-
-        try (BufferedReader reader = new BufferedReader(new FileReader("src/mappings.txt"))){
-            String line;
-            while ((line = reader.readLine()) != null){
-                if (line.trim().isEmpty()){
-                    continue;
-                }
-                String[] codes = line.split(",");
-                int initKeyCode = Integer.parseInt(codes[0]);
-                int finalKeyCode = Integer.parseInt(codes[1]);// change here
-                model.addRow(new Object[] {KeyEvent.getKeyText(initKeyCode), KeyEvent.getKeyText(finalKeyCode)});
-
-                codeToCode.put(initKeyCode, finalKeyCode);
-            }
-        } catch(IOException e){
-            e.printStackTrace();
+        // Is target a Custom Key (Combo)?
+        if (code >= 10000) {
+            CustomKey ck = CustomKeyManager.getByPseudoCode(code);
+            simulateCombo(ck, pressed);
+            return; 
         }
-        
-        KeyMap keymap = new KeyMap();
-        HashMap<String, Integer> stringToKeyCode = new HashMap<>();
-        stringToKeyCode.put("space", KeyEvent.VK_SPACE);
-        stringToKeyCode.put("tab", KeyEvent.VK_TAB);
-        stringToKeyCode.put("caps lock",KeyEvent.VK_CAPS_LOCK);
-        stringToKeyCode.put("shift",KeyEvent.VK_SHIFT);
-        stringToKeyCode.put("backspace",KeyEvent.VK_BACK_SPACE);
-        stringToKeyCode.put("ctrl", KeyEvent.VK_CONTROL);
-         
-        JFrame frame = new JFrame("Keyremapper");
-        frame.setExtendedState(JFrame.MAXIMIZED_BOTH);
+        // Standard Key
+        doSafePress(code, pressed);
+    }     
 
-        JButton chooseKeyToMap = new JButton("submit");
-        JLabel chooseKey = new JLabel("choose the key to remap");
-        JTextField enterKeyToMap = new JTextField(20);
+    public void nativeKeyPressed(NativeKeyEvent e) {
+        WinUser.LowLevelKeyboardProc keyboardHook = new WinUser.LowLevelKeyboardProc() {
+            public LRESULT callback(int nCode, WPARAM wParam, WinUser.KBDLLHOOKSTRUCT info) {
+                if (nCode >= 0) {            
+                    boolean isInjected = (info.flags & 16) != 0; 
+                    if (isInjected) {
+                        return User32.INSTANCE.CallNextHookEx(null, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));   
+                    }                   
+                    
+                    int code = info.vkCode;
+                    boolean isPress = (wParam.intValue() == WinUser.WM_KEYDOWN || wParam.intValue() == WinUser.WM_SYSKEYDOWN);
+                    boolean isRelease = (wParam.intValue() == WinUser.WM_KEYUP || wParam.intValue() == WinUser.WM_SYSKEYUP);
 
-        JButton chooseKeyToRemap = new JButton("submit");
-        JLabel chooseRemap = new JLabel("choose the key it'll remap to");
-        JTextField enterKeyToRemap = new JTextField(20);     
-        
-        JButton removeAllMappings = new JButton("remove all mappings");
+                    // --- NORMALIZE KEYS ---
+                    if (code == 3675 || code == 3676 || code == 91 || code == 92) code = KeyEvent.VK_WINDOWS;
+                    if(code == 160 || code == 161) code = KeyEvent.VK_SHIFT;
+                    if(code == 162 || code == 163) code = KeyEvent.VK_CONTROL;
+                    if(code == 164 || code == 165) code = KeyEvent.VK_ALT;
+                    if(code == 10) code = 13;
 
-        JButton removeMapping = new JButton("remove selected mapping");
+                    // --- RECORDING MODE ---
+                    if (isRecording) {
+                        if (isPress) recordingBuffer.add(code);
+                        return new LRESULT(1); 
+                    }
 
-        
+                    // --- UPDATE TRACKER ---
+                    if (isPress) heldKeys.add(code);
+                    else if (isRelease) heldKeys.remove(code);
 
+                    // ============================================
+                    //        LOGIC FOR HOLDING CUSTOM KEYS
+                    // ============================================
 
-        chooseKey.setVisible(false);
-        chooseKeyToMap.setVisible(false);
-        enterKeyToMap.setVisible(false);
-
-        chooseKeyToRemap.setVisible(false);
-        chooseRemap.setVisible(false);
-        enterKeyToRemap.setVisible(false);
-
-        JButton createMapping = new JButton("create keymap");
-        frame.add(createMapping);
-        createMapping.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent e){
-                chooseKey.setVisible(true);
-                //chooseKeyToMap.setVisible(true);
-                enterKeyToMap.setVisible(true);
-                chooseRemap.setVisible(true);
-                enterKeyToRemap.setVisible(true); 
-                chooseKeyToRemap.setVisible(true);
-            }
-        });
-        
-        removeMapping.addActionListener(new ActionListener(){
-            public void actionPerformed(ActionEvent e){
-                int selectedRow = table.getSelectedRow();
-                if(selectedRow != -1){
-                    String keyToRemove = (String) table.getValueAt(selectedRow, 0); //change this 
-
-                    Integer idToRemove = null;
-                    for(Integer id: codeToCode.keySet()){
-                        if(KeyEvent.getKeyText(id).equals(keyToRemove)){
-                            idToRemove = id;
+                    // 1. CHECK RELEASE (Did we let go of a combo?)
+                    if (isRelease && activeCustomKey != null) {
+                        // If the released key belongs to the active combo, we stop holding
+                        if (activeCustomKey.getRawCodes().contains(code)) {
+                            try {
+                                simulateKeyPress(activeTargetCode, false); // RELEASE Target
+                            } catch (Exception ex) {}
+                            
+                            activeCustomKey = null;
+                            activeTargetCode = -1;
+                            return new LRESULT(1); // Block the release
                         }
                     }
-                    if (idToRemove != null){
-                        codeToCode.remove(idToRemove);
-                        ((DefaultTableModel) table.getModel()).removeRow(selectedRow);
-                        updateTextFile();
-                    }
-                }
-            }
-        });
-        removeAllMappings.addActionListener(new ActionListener(){
-            public void actionPerformed(ActionEvent e){
-                codeToCode.clear();
-                model.setRowCount(0);
-                try(BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt"))){
-                    writer.write("");
-                    writer.close();      
-                }catch(IOException ex){}
-            }
-        });
-        /* 
-        //allow user to get the key they want to map
-        chooseKeyToMap.addActionListener(new ActionListener(){
-            public void actionPerformed(ActionEvent e){
-                String keyToMap = enterKeyToMap.getText();
-                enterKeyToMap.setText("");
-                if (stringToKeyCode.containsKey(keyToMap)){
-                    int code = stringToKeyCode.get(keyToMap);
-                    keymap.setInitKeyCode(code);
-                    chooseRemap.setVisible(true);
-                    enterKeyToRemap.setVisible(true); 
-                    chooseKeyToRemap.setVisible(true);
-                } else{
-                    enterKeyToMap.setText("Error in registering the key you want. ensure it is spelled correctly with spaces if nessesary"); //change this
-                }
-            }
-        });
-        
-        chooseKeyToRemap.addActionListener(new ActionListener(){
-            public void actionPerformed(ActionEvent e){
-                String keyToMap = enterKeyToMap.getText();
-                enterKeyToMap.setText("");
-                String remapKey = enterKeyToRemap.getText();
-                if (stringToKeyCode.containsKey(keyToMap) && stringToKeyCode.containsKey(remapKey) && !codeToCode.containsKey(stringToKeyCode.get(keyToMap))){
-                    int initKeyCode = stringToKeyCode.get(keyToMap);
-                    keymap.setInitKeyCode(initKeyCode);
-                    enterKeyToRemap.setText("");
-                    int finalKeyCode = stringToKeyCode.get(remapKey);
-                    keymap.setFinalKeyCode(finalKeyCode);
-                    codeToCode.put(keymap.getInitKeyCode(), keymap.getFinalKeyCode());
-                    try(BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt", true))){
-                        writer.write(keymap.getInitKeyCode() + "," + keymap.getFinalKeyCode()); //change here
-                        writer.newLine();
-                        writer.close();     
-                    }catch(IOException ex){
-                        ex.printStackTrace();
-                    }
-                    model.addRow(new Object[] {KeyEvent.getKeyText(initKeyCode), KeyEvent.getKeyText(finalKeyCode)});
-                    chooseKey.setVisible(false);
-                    chooseKeyToMap.setVisible(false);
-                    enterKeyToMap.setVisible(false);
-                    // find a way to make this shit more efficient this is repeated too much. maybe put all into a box and make box invis/visible
-                    chooseKeyToRemap.setVisible(false);
-                    chooseRemap.setVisible(false);
-                    enterKeyToRemap.setVisible(false);
-                    keymap.clear();
-                }else{
-                    JOptionPane.showMessageDialog(
-                        frame,                  
-                        "Key(s) is invalid or key has already been mapped.", 
-                        "Input Error",            
-                        JOptionPane.ERROR_MESSAGE 
-                    );
-                    enterKeyToMap.setText("");
-                    enterKeyToRemap.setText("");
-                }
-            }
-        });    
-        frame.add(chooseKey);
-        frame.add(chooseKeyToMap);
-        frame.add(enterKeyToMap);
 
-        frame.add(chooseRemap);
-        frame.add(enterKeyToRemap);
-        frame.add(chooseKeyToRemap);
+                    // 2. CHECK PRESS (Are we starting a combo?)
+                    if (isPress && activeCustomKey == null) {
+                        CustomKey matched = CustomKeyManager.match(heldKeys);
+                        if (matched != null) {
+                            int pseudoID = matched.getPseudoCode();
+                            if (codeToCode.containsKey(pseudoID)) {
+                                // FOUND MATCH! START HOLDING.
+                                activeCustomKey = matched;
+                                activeTargetCode = codeToCode.get(pseudoID);
+                                
+                                // Cleanup Copilot Ghost Keys if needed
+                                if (matched.getRawCodes().contains(134)) {
+                                    cleanCopilotModifiers();
+                                }
+                                
+                                try {
+                                    simulateKeyPress(activeTargetCode, true); // PRESS Target
+                                } catch (Exception ex) {}
+                                
+                                return new LRESULT(1); // Block physical keys
+                            }
+                        }
+                    }
 
-        frame.add(removeAllMappings);
-        frame.add(removeMapping);
-        frame.add(scroll);
-        
-        frame.setLayout(new FlowLayout());
-        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setUndecorated(true);
-        frame.setVisible(true);
-        try{
-            GlobalScreen.registerNativeHook();
-        } catch(NativeHookException ex){
-            System.err.println("error registering native hook");
-            ex.printStackTrace();
+                    // 3. SUSTAIN HOLD (Are we still holding the combo?)
+                    // If a combo is active, any physical press of its components should be blocked
+                    // to prevent "stuttering" or leaking to the OS.
+                    if (isPress && activeCustomKey != null) {
+                        if (activeCustomKey.getRawCodes().contains(code)) {
+                            return new LRESULT(1);
+                        }
+                    }
+                    
+                    // ============================================
+                    //           STANDARD KEY LOGIC
+                    // ============================================
+                    if (codeToCode.containsKey(code)){    
+                        if (code == 134) cleanCopilotModifiers();
+
+                        if (isPress) {
+                            try { simulateKeyPress(codeToCode.get(code), true); } catch (AWTException ex) {}
+                        } else if (isRelease) {
+                            try { simulateKeyPress(codeToCode.get(code), false); } catch (AWTException ex) {}   
+                        }
+                        return new LRESULT(1);
+                    }
+                }   
+                return User32.INSTANCE.CallNextHookEx(null, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));
+            }
+        };
+                                                    
+        HMODULE hMod = Kernel32.INSTANCE.GetModuleHandle(null);
+        HHOOK hhk = User32.INSTANCE.SetWindowsHookEx(WinUser.WH_KEYBOARD_LL, keyboardHook, hMod, 0);
+
+        if (hhk == null) return;
+
+        WinUser.MSG msg = new WinUser.MSG();
+        while (User32.INSTANCE.GetMessage(msg, null, 0, 0) != 0) {
+            User32.INSTANCE.TranslateMessage(msg);
+            User32.INSTANCE.DispatchMessage(msg);
         }
-        GlobalScreen.addNativeKeyListener(new Main());
-        */
+        User32.INSTANCE.UnhookWindowsHookEx(hhk);
+    }
+    
+    public void nativeKeyReleased(NativeKeyEvent e) {}
+    public void nativeKeyTyped(NativeKeyEvent e) {}
+
+    public static void main(String[] args){
+        CustomKeyManager.load();
         SwingUtilities.invokeLater(() -> new RemapperGUI());
         try{
             GlobalScreen.registerNativeHook();
@@ -356,6 +222,7 @@ public class Main implements NativeKeyListener {
         }          
         GlobalScreen.addNativeKeyListener(new Main());
     }
+
     public static void updateTextFile(){
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt"))) {
             for (Map.Entry<Integer, Integer> entry: codeToCode.entrySet()) { 

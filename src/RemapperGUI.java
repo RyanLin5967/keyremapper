@@ -25,6 +25,8 @@ public class RemapperGUI extends JFrame implements ActionListener {
     private JButton confirmVisualBtn = new JButton("Confirm Mapping");
 
     public RemapperGUI() {
+        // Ensure data is loaded
+        CustomKeyManager.load();
         setupData();
         initUI();
         loadExistingMappings();
@@ -45,7 +47,6 @@ public class RemapperGUI extends JFrame implements ActionListener {
         setTitle("Keyremapper");
         setExtendedState(JFrame.MAXIMIZED_BOTH);
         setUndecorated(true);
-        
         setLayout(new BorderLayout());
 
         // --- 1. TOP PANEL ---
@@ -55,10 +56,12 @@ public class RemapperGUI extends JFrame implements ActionListener {
         JButton createMapping = new JButton("create keymap");
         JButton removeMapping = new JButton("remove selected mapping");
         JButton removeAllMappings = new JButton("remove all mappings");
+        JButton addCustomKeyBtn = new JButton("Add Custom Key");
 
         createMapping.setFocusable(false);
         removeMapping.setFocusable(false);
         removeAllMappings.setFocusable(false);
+        addCustomKeyBtn.setFocusable(false);
 
         String[] layoutOptions = {"100%", "75%", "65%"};
         JComboBox<String> layoutSelector = new JComboBox<>(layoutOptions);
@@ -74,12 +77,13 @@ public class RemapperGUI extends JFrame implements ActionListener {
         topPanel.add(createMapping);
         topPanel.add(removeMapping);
         topPanel.add(removeAllMappings);
-        topPanel.add(new JLabel("Size: "));
+        topPanel.add(new JLabel(" | "));
+        topPanel.add(addCustomKeyBtn);
+        topPanel.add(new JLabel(" | Size: "));
         topPanel.add(layoutSelector);
         topPanel.add(confirmVisualBtn);
 
         // --- 2. CENTER: Virtual Keyboard ---
-        // We pass 'this' so clicks go to actionPerformed below
         virtualKeyboard = new VirtualKeyboard(this); 
         JScrollPane kbScroll = new JScrollPane(virtualKeyboard);
 
@@ -99,9 +103,11 @@ public class RemapperGUI extends JFrame implements ActionListener {
 
         // --- ACTION LISTENERS ---
 
+        addCustomKeyBtn.addActionListener(e -> recordNewCustomKey());
+
         createMapping.addActionListener(e -> {
             toggleInputFields(true);
-            visualStep = 1; // Start visual selection mode (Waiting for Source)
+            visualStep = 1; 
             JOptionPane.showMessageDialog(this, "Click the physical key you want to change (turns red).");
         });
 
@@ -109,14 +115,12 @@ public class RemapperGUI extends JFrame implements ActionListener {
             if (sourceKeyBtn != null && destKeyBtn != null) {
                 int sourceCode = sourceKeyBtn.getKeyCode();
                 
-                // CHECK: Is this key already mapped?
                 if (Main.codeToCode.containsKey(sourceCode)) {
                     String keyName = VirtualKeyboard.getName(sourceCode);
                     JOptionPane.showMessageDialog(this, 
                         "The key '" + keyName + "' is already mapped!\nPlease remove the existing mapping from the list before remapping it.", 
-                        "Duplicate Mapping Error", 
-                        JOptionPane.ERROR_MESSAGE);
-                    return; // Stop execution so it doesn't map
+                        "Duplicate Mapping Error", JOptionPane.ERROR_MESSAGE);
+                    return; 
                 }
                 executeMapping(sourceKeyBtn.getKeyCode(), destKeyBtn.getKeyCode());
                 resetVisualSelection();
@@ -128,7 +132,7 @@ public class RemapperGUI extends JFrame implements ActionListener {
             if (row != -1) {
                 String keyNameInTable = (String) table.getValueAt(row, 0);
                 Main.codeToCode.entrySet().removeIf(entry -> 
-                    VirtualKeyboard.getName(entry.getKey()).equals(keyNameInTable)
+                    getKeyName(entry.getKey()).equals(keyNameInTable)
                 );
                 model.removeRow(row);
                 Main.updateTextFile();
@@ -149,11 +153,27 @@ public class RemapperGUI extends JFrame implements ActionListener {
         setVisible(true);
     }
 
+    // --- HELPER METHODS ---
+
+    private void recordNewCustomKey() {
+        KeyRecorder recorder = new KeyRecorder(this);
+        recorder.setVisible(true);
+        
+        // BUG FIX: Check if recorder.result is null (cancelled)
+        if (recorder.result != null && !recorder.result.isEmpty()) {
+            String name = JOptionPane.showInputDialog(this, "Name this custom key (e.g. 'Copilot'):");
+            if (name != null && !name.trim().isEmpty()) {
+                CustomKeyManager.add(name, recorder.result);
+                virtualKeyboard.rebuildCustomKeys();
+            }
+        }
+    }
+
     private void executeMapping(int init, int fin) {
         Main.codeToCode.put(init, fin);
         Main.saveSingleMapping(init, fin);
-        String nameInit = VirtualKeyboard.getName(init);
-        String nameFin = VirtualKeyboard.getName(fin);
+        String nameInit = getKeyName(init);
+        String nameFin = getKeyName(fin);
 
         model.addRow(new Object[]{ nameInit, nameFin });
         keymap.clear();
@@ -163,17 +183,14 @@ public class RemapperGUI extends JFrame implements ActionListener {
     public void actionPerformed(ActionEvent e) {
         if (e.getSource() instanceof KeyButton) {
             KeyButton clickedBtn = (KeyButton) e.getSource();
-            
             int keyCode = clickedBtn.getKeyCode();
 
-            // can't select fn key
             if (keyCode == 0) {
-            JOptionPane.showMessageDialog(this, 
-                "The Fn key is handled by your keyboard's hardware.\nIt cannot be remapped by the operating system.", 
-                "Hardware Restriction", 
-                JOptionPane.ERROR_MESSAGE);
-            return; 
-        }
+                JOptionPane.showMessageDialog(this, 
+                    "The Fn key is handled by your keyboard's hardware.\nIt cannot be remapped by the operating system.", 
+                    "Hardware Restriction", JOptionPane.ERROR_MESSAGE);
+                return; 
+            }
             
             if (visualStep == 1) { 
                 if (sourceKeyBtn != null) sourceKeyBtn.resetColor();
@@ -181,22 +198,15 @@ public class RemapperGUI extends JFrame implements ActionListener {
                 sourceKeyBtn.setSelectedSource();
                 visualStep = 2; 
             } 
-
             else if (visualStep == 2) { 
-
                 if (clickedBtn == sourceKeyBtn) {
-
                     sourceKeyBtn.resetColor();
                     sourceKeyBtn = null;
-                    if (destKeyBtn != null) {
-                        destKeyBtn.resetColor();
-                        destKeyBtn = null;
-                    }
+                    if (destKeyBtn != null) { destKeyBtn.resetColor(); destKeyBtn = null; }
                     visualStep = 1; 
                     confirmVisualBtn.setEnabled(false);
                     return; 
                 }
-
                 if (destKeyBtn != null) destKeyBtn.resetColor();
                 destKeyBtn = clickedBtn;
                 destKeyBtn.setSelectedDest();
@@ -231,8 +241,17 @@ public class RemapperGUI extends JFrame implements ActionListener {
                 int init = Integer.parseInt(codes[0]);
                 int fin = Integer.parseInt(codes[1]);
                 Main.codeToCode.put(init, fin);
-                model.addRow(new Object[]{ VirtualKeyboard.getName(init), VirtualKeyboard.getName(fin) });
+                // Use getKeyName to show proper names for custom keys
+                model.addRow(new Object[]{ getKeyName(init), getKeyName(fin) });
             }
         } catch (IOException e) { e.printStackTrace(); }
+    }
+    
+    private String getKeyName(int code) {
+        if (code >= 10000) {
+            CustomKey ck = CustomKeyManager.getByPseudoCode(code);
+            return (ck != null) ? ck.getName() : "Unknown";
+        }
+        return VirtualKeyboard.getName(code);
     }
 }

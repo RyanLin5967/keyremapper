@@ -2,37 +2,44 @@ import javax.swing.*;
 import java.awt.*;
 
 public class KeyButton extends JButton {
-    private final int keyCode;
-    private final Color defaultColor;
+    private int keyCode;
+    private Color defaultColor; // Stores the "Resting" color (White or Blue)
 
-    // Now we pass width and height explicitly
-    public KeyButton(String text, int keyCode, int width, int height) {
+    public KeyButton(String text, int keyCode, int w, int h) {
         super(text);
         this.keyCode = keyCode;
-        
-        this.defaultColor = new Color(245, 245, 245);
-        this.setBackground(defaultColor);
+        this.setPreferredSize(new Dimension(w, h));
+        this.setMargin(new Insets(0, 0, 0, 0));
         this.setFocusable(false);
-        this.setFont(new Font("Arial", Font.BOLD, 12));
+        this.setFont(new Font("SansSerif", Font.BOLD, 10));
         
-        this.setPreferredSize(new Dimension(width, height));
+        // Initialize default
+        this.defaultColor = Color.WHITE;
+        this.setBackground(defaultColor);
+        this.setBorder(BorderFactory.createLineBorder(Color.GRAY));
+    }
 
-        this.setBorder(BorderFactory.createLineBorder(Color.GRAY, 1, true));
+    @Override
+    public void setBackground(Color bg) {
+        super.setBackground(bg);
+        if (bg != Color.RED && bg != Color.GREEN) {
+            this.defaultColor = bg;
+        }
+    }
+
+    public void setSelectedSource() {
+        super.setBackground(Color.RED);
+    }
+
+    public void setSelectedDest() {
+        super.setBackground(Color.GREEN);
+    }
+
+    public void resetColor() {
+        super.setBackground(this.defaultColor); // Reverts to Blue (if custom) or White
     }
 
     public int getKeyCode() {
         return keyCode;
-    }
-
-    public void resetColor() {
-        setBackground(defaultColor);
-    }
-
-    public void setSelectedSource() {
-        setBackground(new Color(255, 100, 100)); // Red
-    }
-
-    public void setSelectedDest() {
-        setBackground(new Color(100, 255, 100)); // Green 
     }
 }
