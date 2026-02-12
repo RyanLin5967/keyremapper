@@ -1,48 +1,30 @@
 package com.ryanlin.remapper;
 
-import java.io.*;
 import java.util.*;
 
 public class CustomKeyManager {
     public static List<CustomKey> customKeys = new ArrayList<>();
     private static int nextPseudoCode = 10000; 
 
-    public static void load() {
-        customKeys.clear();
-        File f = new File("src/custom_keys.txt");
-        if (!f.exists()) return;
-        try (BufferedReader br = new BufferedReader(new FileReader(new File("src/custom_keys.txt")))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                CustomKey ck = CustomKey.fromFileString(line);
-                if (ck != null) {
-                    customKeys.add(ck);
-                    if (ck.getPseudoCode() >= nextPseudoCode) nextPseudoCode = ck.getPseudoCode() + 1;
-                }
-            }
-        } catch (IOException e) { e.printStackTrace(); }
-    }
-
-    public static void save() {
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter("src/custom_keys.txt"))) {
-            for (CustomKey ck : customKeys) {
-                bw.write(ck.toFileString());
-                bw.newLine();
-            }
-        } catch (IOException e) { e.printStackTrace(); }
+    // Called by ConfigManager after loading JSON to ensure IDs don't conflict
+    public static void recalculateNextId() {
+        int max = 10000;
+        for (CustomKey ck : customKeys) {
+            if (ck.getPseudoCode() >= max) max = ck.getPseudoCode() + 1;
+        }
+        nextPseudoCode = max;
     }
 
     public static CustomKey add(String name, List<Integer> codes) {
-        // This is your original constructor logic
         CustomKey ck = new CustomKey(name, nextPseudoCode++, codes);
         customKeys.add(ck);
-        save();
+        ConfigManager.save(); // Save to JSON
         return ck;
     }
 
     public static void remove(CustomKey key) {
         customKeys.remove(key);
-        save();
+        ConfigManager.save(); // Save to JSON
     }
 
     public static CustomKey getByPseudoCode(int code) {
@@ -50,7 +32,6 @@ public class CustomKeyManager {
         return null;
     }
 
-    // matches if currently held keys contain all the keys required for this custom key
     public static CustomKey match(Set<Integer> pressedKeys) {
         for (CustomKey ck : customKeys) {
             if (pressedKeys.containsAll(ck.getRawCodes())) return ck;
@@ -58,8 +39,7 @@ public class CustomKeyManager {
         return null;
     }
 
-    // --- NEW VALIDATION METHODS FOR GUI ---
-
+    // --- VALIDATION ---
     public static boolean isNameTaken(String name) {
         if (name == null) return false;
         for (CustomKey ck : customKeys) {
@@ -71,7 +51,6 @@ public class CustomKeyManager {
     public static boolean isCombinationTaken(List<Integer> newCodes) {
         Set<Integer> newSet = new HashSet<>(newCodes);
         for (CustomKey ck : customKeys) {
-            // Check strict equality of the set (ignores order)
             if (new HashSet<>(ck.getRawCodes()).equals(newSet)) return true;
         }
         return false;
