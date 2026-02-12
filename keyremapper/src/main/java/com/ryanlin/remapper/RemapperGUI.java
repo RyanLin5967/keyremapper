@@ -4,8 +4,8 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.*;
-import java.io.*;
 import java.util.HashMap;
+import java.util.Map;
 
 public class RemapperGUI extends JFrame implements ActionListener {
     private DefaultTableModel model;
@@ -26,10 +26,10 @@ public class RemapperGUI extends JFrame implements ActionListener {
     private JButton confirmVisualBtn = new JButton("Confirm Mapping");
     
     public RemapperGUI() {
-        CustomKeyManager.load();
+        // ConfigManager.load() was already called in Main, so data is ready
         setupData();
         initUI();
-        loadExistingMappings();
+        loadExistingMappings(); // Now loads from memory
         pack();
     }
 
@@ -46,7 +46,6 @@ public class RemapperGUI extends JFrame implements ActionListener {
 
     private void initUI() {
         setTitle("Keyremapper");
-        //setExtendedState(JFrame.MAXIMIZED_BOTH); 
         setUndecorated(false);    
         setLayout(new BorderLayout());          
 
@@ -103,7 +102,6 @@ public class RemapperGUI extends JFrame implements ActionListener {
         createMapping.addActionListener(e -> {
             toggleInputFields(true);
             visualStep = 1; 
-            //JOptionPane.showMessageDialog(this, "Click the physical key you want to change (turns red).");
         });
 
         confirmVisualBtn.addActionListener(e -> {
@@ -130,14 +128,14 @@ public class RemapperGUI extends JFrame implements ActionListener {
                     getKeyName(entry.getKey()).equals(keyNameInTable)
                 );
                 model.removeRow(row);
-                Main.updateTextFile();
+                ConfigManager.save(); // Save to JSON
             }
         });
 
         removeAllMappings.addActionListener(e -> {
             Main.codeToCode.clear();
             model.setRowCount(0);
-            Main.clearFile();
+            ConfigManager.save(); // Save to JSON
         });
 
         add(northContainer, BorderLayout.NORTH);
@@ -177,7 +175,7 @@ public class RemapperGUI extends JFrame implements ActionListener {
                     return;
                 }
 
-                // --- CORRECTED CALL: Use existing add(String, List) ---
+                // Create and Save (calls ConfigManager internally)
                 CustomKeyManager.add(name, recorder.result);
                 
                 virtualKeyboard.rebuildCustomKeys();
@@ -187,7 +185,8 @@ public class RemapperGUI extends JFrame implements ActionListener {
 
     private void executeMapping(int init, int fin) {
         Main.codeToCode.put(init, fin);
-        Main.saveSingleMapping(init, fin);
+        ConfigManager.save(); // Save to JSON
+        
         String nameInit = getKeyName(init);
         String nameFin = getKeyName(fin);
 
@@ -249,17 +248,12 @@ public class RemapperGUI extends JFrame implements ActionListener {
     }
 
     private void loadExistingMappings() {
-        try (BufferedReader reader = new BufferedReader(new FileReader("src/mappings.txt"))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                String[] codes = line.split(",");
-                int init = Integer.parseInt(codes[0]);
-                int fin = Integer.parseInt(codes[1]);
-                Main.codeToCode.put(init, fin);
-                model.addRow(new Object[]{ getKeyName(init), getKeyName(fin) });
-            }
-        } catch (IOException e) { e.printStackTrace(); }
+        // Updated: Iterates over memory (Main.codeToCode) instead of reading a file
+        for (Map.Entry<Integer, Integer> entry : Main.codeToCode.entrySet()) {
+            int init = entry.getKey();
+            int fin = entry.getValue();
+            model.addRow(new Object[]{ getKeyName(init), getKeyName(fin) });
+        }
     }
     
     private String getKeyName(int code) {
@@ -285,6 +279,6 @@ public class RemapperGUI extends JFrame implements ActionListener {
             entry.getKey() == customKeyCode || entry.getValue() == customKeyCode
         );
         
-        Main.updateTextFile();
+        ConfigManager.save(); // Save to JSON
     }
 }

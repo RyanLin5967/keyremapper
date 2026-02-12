@@ -34,7 +34,7 @@ public class Main {
     // Tracks keys currently pressed physically (for Custom Key matching)
     private static Set<Integer> heldKeys = new HashSet<>();
     
-    // --- AUTO-REPEATER SYSTEM (The Fix) ---
+    // --- AUTO-REPEATER SYSTEM ---
     private static ConcurrentHashMap<Integer, ScheduledFuture<?>> activeRepeaters = new ConcurrentHashMap<>();
     private static ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
     
@@ -67,7 +67,10 @@ public class Main {
 
     public static void main(String[] args) {
         try { robot = new Robot(); } catch (AWTException e) {}
-        CustomKeyManager.load();
+        
+        // LOAD JSON CONFIGURATION AT STARTUP
+        ConfigManager.load();
+        
         SwingUtilities.invokeLater(() -> new RemapperGUI());
         new Thread(Main::installHook).start();
     }
@@ -123,7 +126,7 @@ public class Main {
                     // ============================================
                     if (isRelease && activeCustomKey != null) {
                         if (activeCustomKey.getRawCodes().contains(code)) {
-                            stopRepeater(code); // STOP SPAMMING
+                            stopRepeater(code);
                             activeCustomKey = null;
                             activeTargetCode = -1;
                             return new LRESULT(1); 
@@ -180,27 +183,20 @@ public class Main {
         User32.INSTANCE.UnhookWindowsHookEx(hhk);
     }
 
-    // --- REPEATER LOGIC (FIXED TIMING) ---
+    // --- REPEATER LOGIC ---
 
     private static void startRepeater(int sourceKey, int targetKey) {
         if (activeRepeaters.containsKey(sourceKey)) return;
-
-        // 1. IMMEDIATE ACTION: Fire the key once immediately (The "Typing" feel)
         cleanPhysicalModifiers();
         try { simulateKeyPress(targetKey, true); } catch (Exception e) {}
 
-        // 2. DELAYED ACTION: Start the spamming after 500ms
         Runnable spamTask = () -> {
             try {
-                // Constantly ensure modifiers are gone (essential for Copilot)
                 cleanPhysicalModifiers();
                 simulateKeyPress(targetKey, true);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         };
 
-        // Schedule: Wait 500ms (Initial Delay), then Repeat every 30ms (Speed)
         ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(spamTask, 500, 30, TimeUnit.MILLISECONDS);
         activeRepeaters.put(sourceKey, future);
     }
@@ -208,9 +204,8 @@ public class Main {
     private static void stopRepeater(int sourceKey) {
         ScheduledFuture<?> future = activeRepeaters.remove(sourceKey);
         if (future != null) {
-            future.cancel(true); // Stop the spam thread
+            future.cancel(true);
             
-            // Release the key
             if (codeToCode.containsKey(sourceKey)) {
                 try { simulateKeyPress(codeToCode.get(sourceKey), false); } catch (Exception e) {}
             } else if (activeCustomKey != null) {
@@ -224,11 +219,9 @@ public class Main {
 
     private static void cleanPhysicalModifiers() {
         if (robot == null) return;
-        
         for (Map.Entry<Integer, Integer> entry : windowsToJavaModifiers.entrySet()) {
             int winCode = entry.getKey();
             int javaCode = entry.getValue();
-            
             if ((Win32User32.INSTANCE.GetAsyncKeyState(winCode) & 0x8000) != 0) {
                 robot.keyRelease(javaCode);
             }
@@ -237,8 +230,6 @@ public class Main {
 
     private static void doSafePress(int code, boolean pressed) {
         if (code == 13) code = 10;
-        
-        // F23 / Copilot Hardware Injection
         if (code == 134 || code == KeyEvent.VK_F23) {
             if (pressed) {
                 if (robot != null) {
@@ -255,7 +246,6 @@ public class Main {
             }
             return;
         }
-
         if (robot != null) {
             if (pressed) robot.keyPress(code);
             else robot.keyRelease(code);
@@ -280,39 +270,14 @@ public class Main {
         }
     }
 
-    // --- FILE I/O ---
-    
-    public static void updateTextFile(){
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt"))) {
-            for (Map.Entry<Integer, Integer> entry: codeToCode.entrySet()) { 
-                writer.write(entry.getKey() + "," + entry.getValue());
-                writer.newLine(); 
-            }
-        } catch (IOException ex) { ex.printStackTrace(); }       
-    }
-
-    public static void saveSingleMapping(int init, int result) { 
-        codeToCode.put(init, result);
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt", true))) {
-            writer.write(init + "," + result);
-            writer.newLine(); 
-        } catch (IOException ex) { ex.printStackTrace(); }
-    }    
-    
-    public static void clearFile() { 
-        codeToCode.clear();
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter("src/mappings.txt"))) { 
-            writer.write(""); 
-        } catch (IOException ex) { ex.printStackTrace(); } 
-    }
-    
+    // --- HELPER FOR GUI TO DELETE AND SAVE ---
     public static void deleteCustomKey(CustomKey key) {
         if (key == null) return;  
+        // Remove from Map
         if (codeToCode.containsKey(key.getPseudoCode())) {
             codeToCode.remove(key.getPseudoCode());
         }
+        // Remove from Manager (this triggers JSON save)
         CustomKeyManager.remove(key); 
-        updateTextFile();       
-        CustomKeyManager.save(); 
     }
-}                                                                                                  
+}
