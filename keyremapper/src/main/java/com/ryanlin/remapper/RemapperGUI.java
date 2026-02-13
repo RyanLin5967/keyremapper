@@ -27,15 +27,18 @@ public class RemapperGUI extends JFrame implements ActionListener {
     
     public RemapperGUI() {
         // ConfigManager.load() was already called in Main, so data is ready
+        
         initUI();
         loadExistingMappings(); // Now loads from memory
         pack();
+        setLocationRelativeTo(null);
     }
 
     private void initUI() {
         setTitle("Keyremapper");
         setUndecorated(false);    
-        setLayout(new BorderLayout());          
+        setLayout(new BorderLayout());    
+      
 
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         topPanel.setBackground(null);
@@ -70,6 +73,18 @@ public class RemapperGUI extends JFrame implements ActionListener {
         });
 
         topPanel.add(shiftToggleBtn);
+        JButton wrappedBtn = new JButton("2026 Wrapped");
+        wrappedBtn.setFocusable(false);
+        wrappedBtn.setBackground(null); // Distinct Green Color
+
+        wrappedBtn.addActionListener(e -> {
+            // Open the Wrapped Window
+            WrappedWindow wrapped = new WrappedWindow((JFrame) SwingUtilities.getWindowAncestor(this));
+            wrapped.setVisible(true);
+        });
+
+        // Add it to your topPanel or wherever you keep the main buttons
+        topPanel.add(wrappedBtn);
         JButton createMapping = new JButton("create keymap");
         JButton removeMapping = new JButton("remove selected mapping");
         JButton removeAllMappings = new JButton("remove all mappings");
@@ -177,7 +192,7 @@ public class RemapperGUI extends JFrame implements ActionListener {
         add(kbScroll, BorderLayout.CENTER);
         add(tableScroll, BorderLayout.EAST);
 
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
         setVisible(true);
     }
 

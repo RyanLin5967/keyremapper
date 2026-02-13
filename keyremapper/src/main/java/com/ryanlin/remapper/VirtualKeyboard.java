@@ -316,14 +316,14 @@ public class VirtualKeyboard extends JPanel {
 
     private JPanel buildCompactAlphaBlock() {
         JPanel block = new JPanel(new GridLayout(0, 1, 0, 0));
-        block.add(createRow(new String[]{"`","1","2","3","4","5","6","7","8","9","0","-","=","Backspace"}, new int[]{192,49,50,51,52,53,54,55,56,57,48,189,187,8}, new int[]{50,50,50,50,50,50,50,50,50,50,50,50,50,100}));
+        block.add(createRow(new String[]{"Esc","1","2","3","4","5","6","7","8","9","0","-","=","Backspace"}, new int[]{27,49,50,51,52,53,54,55,56,57,48,189,187,8}, new int[]{50,50,50,50,50,50,50,50,50,50,50,50,50,100}));
         block.add(createRow(new String[]{"Tab","Q","W","E","R","T","Y","U","I","O","P","[","]","\\"}, new int[]{9,81,87,69,82,84,89,85,73,79,80,219,221,220}, new int[]{75,50,50,50,50,50,50,50,50,50,50,50,50,75}));
         block.add(createRow(new String[]{"Caps","A","S","D","F","G","H","J","K","L",";","'","Enter"}, new int[]{20,65,83,68,70,71,72,74,75,76,186,222,13}, new int[]{90,50,50,50,50,50,50,50,50,50,50,50,110}));
         block.add(createRow(new String[]{"Shift","Z","X","C","V","B","N","M",",",".","/","Shift","▲"}, new int[]{16,90,88,67,86,66,78,77,188,190,191,16,38}, new int[]{115,50,50,50,50,50,50,50,50,50,50,85,50}));
         JPanel bottomRow = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 1.0; gbc.insets = new Insets(1, 1, 1, 1);
-        String[] leftLabels = {"Ctrl","Windows","Alt","Space","Alt","Fn"};
+        String[] leftLabels = {"Ctrl","Win","Alt","Space","Alt","Fn"};
         int[] leftCodes = {17,524,18,32,18,0};
         int[] leftWidths = {75,75,75,275,75,75}; 
         for(int i=0; i<leftLabels.length; i++) {
@@ -425,7 +425,7 @@ public class VirtualKeyboard extends JPanel {
         upRow.add(Box.createHorizontalGlue(), gbc);
         KeyButton upBtn = new KeyButton("▲", 38, UNIT_WIDTH, UNIT_HEIGHT);
         upBtn.addActionListener(keyListener);
-        codeToNameMap.put(38, "Up");
+        codeToNameMap.put(38, "▲");
         gbc.weightx = 0; upRow.add(upBtn, gbc);   
         gbc.weightx = 1.0; upRow.add(Box.createHorizontalGlue(), gbc);
         cluster.add(upRow);
