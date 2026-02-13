@@ -22,6 +22,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 
+import com.formdev.flatlaf.FlatDarkLaf; 
+
+
 public class Main {
     // --- JNA CONFIGURATION ---
     private static HHOOK hhk;
@@ -45,6 +48,7 @@ public class Main {
     // Recording State
     public static volatile boolean isRecording = false;
     public static LinkedHashSet<Integer> recordingBuffer = new LinkedHashSet<>();
+    private static int activeCustomTriggerKey = -1;
     
     // Physical modifiers map for cleaning
     private static final Map<Integer, Integer> windowsToJavaModifiers = new HashMap<>();
@@ -66,13 +70,19 @@ public class Main {
     }
 
     public static void main(String[] args) {
+        try {
+            UIManager.setLookAndFeel(new FlatDarkLaf());
+        } catch (Exception ex) {
+            System.err.println("Failed to initialize LaF");
+        }
         try { robot = new Robot(); } catch (AWTException e) {}
-        
-        // LOAD JSON CONFIGURATION AT STARTUP
         ConfigManager.load();
-        
+        ConfigManager.autoSave();
         SwingUtilities.invokeLater(() -> new RemapperGUI());
         new Thread(Main::installHook).start();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            ConfigManager.save();
+        }));
     }
 
     private static void installHook() {
@@ -83,78 +93,112 @@ public class Main {
             public LRESULT callback(int nCode, WPARAM wParam, KBDLLHOOKSTRUCT info) {
                 if (nCode >= 0) {
                     boolean isInjected = (info.flags & 16) != 0; 
+                    boolean wasDown = (info.flags & 0x40000000) != 0;
+                    
                     if (isInjected) {
                         return User32.INSTANCE.CallNextHookEx(hhk, nCode, wParam, new LPARAM(com.sun.jna.Pointer.nativeValue(info.getPointer())));
                     }
 
-                    int code = info.vkCode;
+                    int originalCode = info.vkCode; // Capture raw code for robust checking
+                    int code = originalCode;
+
                     boolean isPress = (wParam.intValue() == WinUser.WM_KEYDOWN || wParam.intValue() == WinUser.WM_SYSKEYDOWN);
                     boolean isRelease = (wParam.intValue() == WinUser.WM_KEYUP || wParam.intValue() == WinUser.WM_SYSKEYUP);
 
-                    // --- NORMALIZE KEYS ---
-                    if (code == 91 || code == 92) code = KeyEvent.VK_WINDOWS;
-                    if (code == 160 || code == 161) code = KeyEvent.VK_SHIFT;
-                    if (code == 162 || code == 163) code = KeyEvent.VK_CONTROL;
-                    if (code == 164 || code == 165) code = KeyEvent.VK_ALT;
-                    if (code == 10) code = 13;
+                    // 1. NORMALIZE
+                    if (code == 91 || code == 92) code = KeyEvent.VK_WINDOWS; // 524
+                    if (code == 160 || code == 161) code = KeyEvent.VK_SHIFT; // 16
+                    if (code == 162 || code == 163) code = 17; // Ctrl
+                    if (code == 164 || code == 165) code = 18; // Alt
+                    if (code == 10) code = 13; // Enter
 
-                    // --- RECORDING MODE ---
+                    // 2. ALWAYS UPDATE HELD KEYS FIRST (Fixes the "Stuck State" bug)
+                    if (isPress) {
+                        if (code == 134 || code == 123) { // Copilot F23 / F12 Fix
+                            heldKeys.remove(16);
+                            heldKeys.remove(524);
+                        }
+                        heldKeys.add(code);
+                    } else if (isRelease) {
+                        heldKeys.remove(code); // <--- This MUST happen before we return!
+                    }
+
+                    // 3. RECORDING MODE
                     if (isRecording) {
-                        if (isPress) {
-                            if (code == 134 || code == KeyEvent.VK_F23) {
-                                recordingBuffer.remove(KeyEvent.VK_SHIFT);
-                                recordingBuffer.remove(KeyEvent.VK_WINDOWS);
+                        if (isPress && !wasDown) {
+                            if (code == 134 || code == 123) { 
+                                recordingBuffer.remove((Integer)16);
+                                recordingBuffer.remove((Integer)524);
                             }
-                            recordingBuffer.add(code);
+                            if (!recordingBuffer.contains(code)) recordingBuffer.add(code);
                         }
                         return new LRESULT(1);
                     }
 
-                    // --- INPUT TRACKING ---
-                    if (isPress) {
-                        if (code == 134 || code == KeyEvent.VK_F23) {
-                            heldKeys.remove(KeyEvent.VK_SHIFT);
-                            heldKeys.remove(KeyEvent.VK_WINDOWS);
-                        }
-                        heldKeys.add(code);
-                    } else if (isRelease) {
-                        heldKeys.remove(code);
-                    }
-
-                    // ============================================
-                    //          CUSTOM KEY LOGIC (Combos)
-                    // ============================================
+                    // 4. CHECK RELEASE TO STOP CUSTOM KEYS
                     if (isRelease && activeCustomKey != null) {
-                        if (activeCustomKey.getRawCodes().contains(code)) {
-                            stopRepeater(code);
+                        // Check normalized AND raw codes
+                        boolean isPartOfCombo = activeCustomKey.getRawCodes().contains(code) || 
+                                                activeCustomKey.getRawCodes().contains(originalCode);
+
+                        if (isPartOfCombo) {
+                            int stopKey = (activeCustomTriggerKey != -1) ? activeCustomTriggerKey : code;
+                            stopRepeater(stopKey);
+                            
                             activeCustomKey = null;
                             activeTargetCode = -1;
+                            activeCustomTriggerKey = -1;
                             return new LRESULT(1); 
                         }
                     }
 
+                    // 5. HEATMAP & COMBOS
+                    // Use !wasDown for repeats, but relies on isPress state
+                    if (isPress && !wasDown) { // Strict single count
+                        HeatmapManager.setCount(code);
+                        
+                        boolean hasModifier = heldKeys.contains(17) || heldKeys.contains(18) || heldKeys.contains(16) || heldKeys.contains(524);
+                        boolean isCurrentKeyModifier = (code == 17 || code == 18 || code == 16 || code == 524);
+
+                        if (hasModifier && !isCurrentKeyModifier) {
+                            String combo = HeatmapManager.buildComboString(heldKeys, code);
+                            HeatmapManager.recordCombo(combo);
+                        }
+                    }
+
+                    // 6. START CUSTOM KEYS
+                    // Strict Check: activeCustomKey must be null
                     if (isPress && activeCustomKey == null && !activeRepeaters.containsKey(code)) {
                         CustomKey matched = CustomKeyManager.match(heldKeys);
-                        if (matched != null) {
+                        
+                        // STRICT MATCHING: Only trigger if heldKeys size matches macro size
+                        // This prevents "Ctrl + Copilot Keys" from triggering it.
+                        if (matched != null && heldKeys.size() == matched.getRawCodes().size()) {
                             int pseudoID = matched.getPseudoCode();
+                            
+                            if (!wasDown) HeatmapManager.setCount(pseudoID);
+
                             if (codeToCode.containsKey(pseudoID)) {
                                 activeCustomKey = matched;
                                 activeTargetCode = codeToCode.get(pseudoID);
+                                activeCustomTriggerKey = code; 
+                                
                                 startRepeater(code, activeTargetCode); 
                                 return new LRESULT(1); 
                             }
                         }
-                    }
+                    }                     
 
+                    // 7. BLOCK INPUT IF CUSTOM KEY ACTIVE
                     if (activeCustomKey != null) {
-                        if (activeCustomKey.getRawCodes().contains(code)) {
+                        boolean isPartOfCombo = activeCustomKey.getRawCodes().contains(code) || 
+                                                activeCustomKey.getRawCodes().contains(originalCode);
+                        if (isPartOfCombo) {
                             return new LRESULT(1); 
                         }
                     }
 
-                    // ============================================
-                    //        STANDARD KEY REMAPPING
-                    // ============================================
+                    // 8. STANDARD REMAPPING
                     if (activeCustomKey == null && codeToCode.containsKey(code)) {
                         int target = codeToCode.get(code);
 
@@ -183,10 +227,8 @@ public class Main {
         User32.INSTANCE.UnhookWindowsHookEx(hhk);
     }
 
-    // --- REPEATER LOGIC ---
-
     private static void startRepeater(int sourceKey, int targetKey) {
-        if (activeRepeaters.containsKey(sourceKey)) return;
+        if (activeRepeaters.containsKey(sourceKey)) return;               
         cleanPhysicalModifiers();
         try { simulateKeyPress(targetKey, true); } catch (Exception e) {}
 
@@ -214,8 +256,6 @@ public class Main {
         }
     }
 
-
-    // --- UTILITIES ---
 
     private static void cleanPhysicalModifiers() {
         if (robot == null) return;
@@ -270,14 +310,12 @@ public class Main {
         }
     }
 
-    // --- HELPER FOR GUI TO DELETE AND SAVE ---
     public static void deleteCustomKey(CustomKey key) {
         if (key == null) return;  
-        // Remove from Map
+
         if (codeToCode.containsKey(key.getPseudoCode())) {
             codeToCode.remove(key.getPseudoCode());
         }
-        // Remove from Manager (this triggers JSON save)
         CustomKeyManager.remove(key); 
     }
 }
